@@ -10,7 +10,7 @@ function body(req){return new Promise((res,rej)=>{let b='';req.on('data',c=>b+=c
 function send(res,status,obj){res.writeHead(status,{'content-type':'application/json','access-control-allow-origin':'*'});res.end(JSON.stringify(obj))}
 function auth(req){const c=req.headers.cookie||'',sid=(c.match(/sid=([^;]+)/)||[])[1];return sessions.get(sid)}
 function api(req,res,p){
- if(req.method==='POST'&&p==='/api/login') return body(req).then(x=>{const u=db.users.find(a=>a.id===x.username);if(!u||!verify(x.password,u.password))return send(res,401,{error:'Usuário ou senha inválidos'});const sid=crypto.randomBytes(24).toString('hex');sessions.set(sid,u);res.setHeader('set-cookie',`sid=${sid}; HttpOnly; SameSite=Lax; Path=/`);send(res,200,{user:{id:u.id,name:u.name,role:u.role}})});
+ if(req.method==='POST'&&p==='/api/login') return body(req).then(x=>{const login=String(x.username||'').toLowerCase();const u=db.users.find(a=>a.id.toLowerCase()===login||a.name.toLowerCase()===login);if(!u||!verify(x.password,u.password))return send(res,401,{error:'Usuário ou senha inválidos'});const sid=crypto.randomBytes(24).toString('hex');sessions.set(sid,u);res.setHeader('set-cookie',`sid=${sid}; HttpOnly; SameSite=Lax; Path=/`);send(res,200,{user:{id:u.id,name:u.name,role:u.role}})});
  const u=auth(req);if(!u)return send(res,401,{error:'Não autenticado'});
  if(req.method==='GET'&&p==='/api/bootstrap')return send(res,200,{user:{id:u.id,name:u.name,role:u.role},partners:db.partners,banks:db.banks,closings:db.closings,users:db.users.map(x=>({id:x.id,name:x.name,role:x.role}))});
  if(u.role!=='admin')return send(res,403,{error:'Apenas Eduardo pode alterar parâmetros'});
