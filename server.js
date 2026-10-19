@@ -4,7 +4,7 @@ const hash=(p,s=crypto.randomBytes(16).toString('hex'))=>`${s}:${crypto.scryptSy
 const verify=(p,h)=>{const [s,v]=String(h).split(':');return s&&v&&crypto.timingSafeEqual(Buffer.from(v,'hex'),crypto.scryptSync(p,s,64));};
 if (process.env.VERCEL && (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY)) throw new Error('SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY são obrigatórios na Vercel');
 let db=fs.existsSync(dataFile)?JSON.parse(fs.readFileSync(dataFile)): {users:[{id:'admin',name:'Eduardo',role:'admin',password:hash(process.env.ADMIN_PASSWORD||'inepad2024')}],partners:[],banks:[],closings:[]};
-function save(){fs.writeFileSync(dataFile,JSON.stringify(db,null,2))} save();
+function save(){if(!process.env.VERCEL) fs.writeFileSync(dataFile,JSON.stringify(db,null,2))} if(!process.env.VERCEL) save();
 const sessions=new Map();
 function body(req){return new Promise((res,rej)=>{let b='';req.on('data',c=>b+=c);req.on('end',()=>{try{res(b?JSON.parse(b):{})}catch(e){rej(e)}})})}
 function send(res,status,obj){res.writeHead(status,{'content-type':'application/json','access-control-allow-origin':'*'});res.end(JSON.stringify(obj))}
@@ -22,4 +22,4 @@ function api(req,res,p){
 }
 const server=http.createServer((req,res)=>{const p=url.parse(req.url).pathname;if(p.startsWith('/api/'))return api(req,res,p);let f=p==='/'?'/public/index.html':p;f=path.join(root,f);if(!f.startsWith(path.join(root,'public')))return send(res,404,{});fs.readFile(f,(e,d)=>{if(e)return send(res,404,{});res.writeHead(200,{'content-type':f.endsWith('.js')?'text/javascript':'text/html'});res.end(d)})});
 if (require.main === module) server.listen(process.env.PORT||3000,()=>console.log('INEPAD em http://localhost:'+(process.env.PORT||3000)));
-module.exports = server;
+module.exports = (req, res) => server.emit('request', req, res);
