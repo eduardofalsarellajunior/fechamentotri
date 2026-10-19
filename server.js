@@ -21,4 +21,5 @@ function api(req,res,p){
  send(res,404,{error:'Rota não encontrada'});
 }
 const server=http.createServer((req,res)=>{const p=url.parse(req.url).pathname;if(p.startsWith('/api/'))return api(req,res,p);let f=p==='/'?'/public/index.html':p;f=path.join(root,f);if(!f.startsWith(path.join(root,'public')))return send(res,404,{});fs.readFile(f,(e,d)=>{if(e)return send(res,404,{});res.writeHead(200,{'content-type':f.endsWith('.js')?'text/javascript':'text/html'});res.end(d)})});
-server.listen(process.env.PORT||3000,()=>console.log('INEPAD em http://localhost:'+(process.env.PORT||3000)));
+if (require.main === module) server.listen(process.env.PORT||3000,()=>console.log('INEPAD em http://localhost:'+(process.env.PORT||3000)));
+module.exports = server;
