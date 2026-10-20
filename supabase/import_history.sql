@@ -1,15 +1,15 @@
 -- Histórico importado de Conferencia-distribuição-valores-trimestrais.xlsx
 -- Execute após supabase/schema.sql
-insert into banks(id,name) values
-('hist-1','Itaú Investimentos'),
-('hist-2','Itaú Consulting'),
-('hist-3','Banco do Brasil'),
-('hist-4','Planner'),
-('hist-5','Sicred'),
-('hist-6','Deposito Judicial'),
-('hist-7','BTG'),
-('hist-8','XP'),
-('hist-9','Verum') on conflict (id) do nothing;
+insert into banks(name) values
+('Itaú Investimentos'),
+('Itaú Consulting'),
+('Banco do Brasil'),
+('Planner'),
+('Sicred'),
+('Deposito Judicial'),
+('BTG'),
+('XP'),
+('Verum');
 insert into closings(quarter,current_cash,previous_distribution,distribution_pct,rows) values ('2018 30-Junho',823933.18,0.00,0.000000,'{"balances": {"Itaú Investimentos": 35437.45, "Itaú Consulting": 240198.9, "Banco do Brasil": 103810.83, "Planner": 0, "Sicred": 0, "Deposito Judicial": 0, "BTG": 0, "XP": 444486.0, "Verum": 0}, "actual_distribution": 0, "source": "Conferencia-distribuição-valores-trimestrais.xlsx"}'::jsonb);
 insert into closings(quarter,current_cash,previous_distribution,distribution_pct,rows) values ('2018 30-Setembro',1110501.17,823933.18,0.000000,'{"balances": {"Itaú Investimentos": 33778.2, "Itaú Consulting": 521635.53, "Banco do Brasil": 104908.82, "Planner": 0, "Sicred": 0, "Deposito Judicial": 0, "BTG": 0, "XP": 450178.62, "Verum": 0}, "actual_distribution": 0, "source": "Conferencia-distribuição-valores-trimestrais.xlsx"}'::jsonb);
 insert into closings(quarter,current_cash,previous_distribution,distribution_pct,rows) values ('2018 31-Dezembro',1109700.57,1110501.17,90.000000,'{"balances": {"Itaú Investimentos": 0.0, "Itaú Consulting": 461429.87, "Banco do Brasil": 105469.7, "Planner": 0, "Sicred": 0, "Deposito Judicial": 0, "BTG": 0, "XP": 542801.0, "Verum": 0}, "actual_distribution": 325188.18, "source": "Conferencia-distribuição-valores-trimestrais.xlsx"}'::jsonb);
