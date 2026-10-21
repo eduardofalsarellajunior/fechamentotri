@@ -19,6 +19,7 @@ async function api(req,res,p){
  if(req.method==='POST'&&p==='/api/partners')return body(req).then(x=>{x.id=x.id||crypto.randomUUID();const password=x.password||'inepad123';delete x.password;db.partners.push(x);if(!db.users.some(a=>a.id===x.id))db.users.push({id:x.id,name:x.name,role:'partner',password:hash(password)});save();send(res,200,x)});
  if(req.method==='PUT'&&p.startsWith('/api/partners/'))return body(req).then(x=>{const i=db.partners.findIndex(a=>a.id===p.split('/').pop());if(i<0)return send(res,404,{error:'Sócio não encontrado'});db.partners[i]={...db.partners[i],...x};save();send(res,200,db.partners[i])});
  if(req.method==='POST'&&p==='/api/banks')return body(req).then(x=>{x.id=crypto.randomUUID();db.banks.push(x);save();send(res,200,x)});
+ if(req.method==='DELETE'&&p.startsWith('/api/banks/'))return (async()=>{const id=p.split('/').pop();if(process.env.SUPABASE_URL){const r=await fetch(process.env.SUPABASE_URL+'/rest/v1/banks?id=eq.'+encodeURIComponent(id),{method:'DELETE',headers:{apikey:process.env.SUPABASE_SERVICE_ROLE_KEY,Authorization:'Bearer '+process.env.SUPABASE_SERVICE_ROLE_KEY}});if(!r.ok)return send(res,500,{error:'Não foi possível excluir a conta'});}db.banks=db.banks.filter(b=>b.id!==id);save();send(res,200,{ok:true})})();
  if(req.method==='POST'&&p==='/api/closings')return body(req).then(x=>{x.id=crypto.randomUUID();x.createdAt=new Date().toISOString();db.closings.push(x);save();send(res,200,x)});
  send(res,404,{error:'Rota não encontrada'});
 }
