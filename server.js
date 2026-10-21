@@ -8,10 +8,11 @@ function save(){if(!process.env.VERCEL) fs.writeFileSync(dataFile,JSON.stringify
 const sessions=new Map();
 function body(req){return new Promise((res,rej)=>{let b='';req.on('data',c=>b+=c);req.on('end',()=>{try{res(b?JSON.parse(b):{})}catch(e){rej(e)}})})}
 function send(res,status,obj){res.writeHead(status,{'content-type':'application/json','access-control-allow-origin':'*'});res.end(JSON.stringify(obj))}
-function auth(req){const c=req.headers.cookie||'',sid=(c.match(/sid=([^;]+)/)||[])[1];return sessions.get(sid)}
-function api(req,res,p){
+async function auth(req){const c=req.headers.cookie||'',sid=(c.match(/sid=([^;]+)/)||[])[1];if(sid&&sessions.has(sid))return sessions.get(sid);const token=(c.match(/sb-token=([^;]+)/)||[])[1];if(!token||!process.env.SUPABASE_URL||!process.env.SUPABASE_SERVICE_ROLE_KEY)return null;try{const r=await fetch(process.env.SUPABASE_URL+'/auth/v1/user',{headers:{apikey:process.env.SUPABASE_SERVICE_ROLE_KEY,Authorization:'Bearer '+token}});if(!r.ok)return null;const su=await r.json();return {id:su.id,name:su.email||'Usuário',email:su.email,role:su.email===process.env.ADMIN_EMAIL?'admin':'partner'}}catch(e){return null}}
+async function api(req,res,p){
  if(req.method==='POST'&&p==='/api/login') return body(req).then(x=>{const login=String(x.username||'').toLowerCase();const u=db.users.find(a=>a.id.toLowerCase()===login||a.name.toLowerCase()===login);if(!u||!verify(x.password,u.password))return send(res,401,{error:'Usuário ou senha inválidos'});const sid=crypto.randomBytes(24).toString('hex');sessions.set(sid,u);res.setHeader('set-cookie',`sid=${sid}; HttpOnly; SameSite=Lax; Path=/`);send(res,200,{user:{id:u.id,name:u.name,role:u.role}})});
- const u=auth(req);if(!u)return send(res,401,{error:'Não autenticado'});
+ if(req.method==='GET'&&p==='/api/config')return send(res,200,{url:process.env.SUPABASE_URL||'',anonKey:process.env.SUPABASE_ANON_KEY||''});
+ const u=await auth(req);if(!u)return send(res,401,{error:'Não autenticado'});
  if(req.method==='GET'&&p==='/api/bootstrap')return send(res,200,{user:{id:u.id,name:u.name,role:u.role},partners:db.partners,banks:db.banks,closings:db.closings,users:db.users.map(x=>({id:x.id,name:x.name,role:x.role}))});
  if(u.role!=='admin')return send(res,403,{error:'Apenas Eduardo pode alterar parâmetros'});
  if(req.method==='POST'&&p==='/api/partners')return body(req).then(x=>{x.id=x.id||crypto.randomUUID();const password=x.password||'inepad123';delete x.password;db.partners.push(x);if(!db.users.some(a=>a.id===x.id))db.users.push({id:x.id,name:x.name,role:'partner',password:hash(password)});save();send(res,200,x)});
