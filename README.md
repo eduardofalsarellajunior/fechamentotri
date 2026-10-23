@@ -2,6 +2,8 @@
 
 Aplicação na Vercel, com Supabase Auth e PostgreSQL para todos os dados. O navegador apresenta os mesmos cálculos de prévia que o servidor valida ao salvar.
 
+Os arquivos `public/inepad-logo.webp` e `public/inepad-favicon.png` são as artes originais publicadas pelo INEPAD em `inepadconsulting.com` (`cropped-Prancheta-3.webp` e `cropped-favicon-270x270.png`). Exiba os arquivos diretamente; não redesenhe a marca.
+
 ## Configuração
 
 Na Vercel, configure `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` e `ADMIN_EMAIL`. Somente a URL e a chave pública são enviadas ao navegador. O e-mail confirmado em `ADMIN_EMAIL` identifica o único administrador. O login usa Supabase Auth.
