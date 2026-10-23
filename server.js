@@ -282,18 +282,23 @@ function createHandler({ env = process.env, fetchImpl = globalThis.fetch } = {})
     }
 
     if (req.method === 'POST' && pathname === '/api/closings') {
-      const { calculateClosing, parsePeriod, normalizeClosing } = require('./public/model.js');
+      const { calculateClosing, parsePeriod, normalizeClosing, grossDistributionForCarryForward } = require('./public/model.js');
       const body = await readBody(req);
       const year = number(body.year, 'ano', { min: 2000, max: 2099, decimals: 0 });
       const quarter = number(body.quarter, 'trimestre', { min: 1, max: 4, decimals: 0 });
       const previousCash = number(body.previousCash, 'saldo do trimestre anterior', { min: -1e12 });
-      const previousDistribution = number(body.previousDistribution, 'distribuição do trimestre anterior');
+      let previousDistribution = number(body.previousDistribution, 'distribuição do trimestre anterior');
       const distributionPct = number(body.distributionPct, 'percentual de distribuição', { max: 100, decimals: 6 });
       const actualDistribution = number(body.actualDistribution, 'distribuição efetivamente realizada');
       const [banks, partners, closings] = await Promise.all([
         rows('banks', 'id,name'), rows('partners', partnerFields), rows('closings')
       ]);
       const periodKey = `${year}-Q${quarter}`;
+      const previousRecords = closings.filter(closing => parsePeriod(closing.rows?.period_key || closing.quarter)?.order === year * 4 + quarter - 1 && !normalizeClosing(closing).pending);
+      if (previousRecords.length > 1) throw new HttpError(409, 'Existe mais de um fechamento anterior. Confira o histórico antes de continuar.');
+      const previousClosing = previousRecords[0];
+      const previousGross = grossDistributionForCarryForward(previousClosing);
+      if (previousGross != null) previousDistribution = previousGross;
       const existing = closings.filter(closing => parsePeriod(closing.rows?.period_key || closing.quarter)?.key === periodKey);
       if (existing.length > 1 || (existing.length === 1 && !normalizeClosing(existing[0]).pending)) {
         throw new HttpError(409, 'Já existe um fechamento para este trimestre. Consulte o histórico.');
@@ -332,6 +337,8 @@ function createHandler({ env = process.env, fetchImpl = globalThis.fetch } = {})
           bank_balances: bankBalances,
           previous_cash: previousCash,
           previous_distribution: previousDistribution,
+          previous_distribution_basis: previousGross != null ? 'gross_with_complements' : 'manual_gross_with_complements',
+          ...(previousClosing ? { previous_closing_id: previousClosing.id } : {}),
           actual_distribution: actualDistribution,
           generated_cash: result.generatedCash,
           distribution_amount: result.distributionAmount,

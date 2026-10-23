@@ -312,6 +312,64 @@ def run():
         readonly.close()
         print("PASS: common users can inspect reports and cannot open administration")
 
+        # The next quarter must carry forward gross distribution including
+        # minimum supplements, before health-plan or other personal discounts.
+        gross_context = browser.new_context(viewport={"width": 1440, "height": 1000}, reduced_motion="reduce")
+        gross_mock = MockAPI()
+        gross_parameters = [
+            {"id": "partner-eduardo", "name": "Eduardo", "share": 7.32, "minimum": 14000, "discount": 0},
+            {"id": "partner-ana", "name": "Ana", "share": 92.68, "minimum": 0, "discount": 938.3},
+        ]
+        gross_mock.state["partners"] = copy.deepcopy(gross_parameters)
+        gross_quarter = next(c for c in gross_mock.state["closings"] if c["quarter"] == "2026 3º Trimestre")
+        gross_quarter["rows"].update({
+            "distribution_basis": "actual_distribution",
+            "partner_parameters": gross_parameters,
+            "partner_distribution": {
+                "baseDistribution": 388803.53, "totalComplement": 13539.58,
+                "totalDiscount": 2814.90, "totalGross": 402343.11, "totalPayable": 399528.21,
+            },
+        })
+        install_mocks(gross_context, gross_mock)
+        gross_page = gross_context.new_page()
+        gross_page.on("pageerror", lambda error: errors.append(str(error)))
+        gross_page.on("console", lambda entry: errors.append(entry.text) if entry.type == "error" else None)
+        gross_page.goto(base)
+        expect(gross_page.locator("#appShell")).to_be_visible()
+        gross_page.locator("#newClosingButton").click()
+        expect(gross_page.locator("#closingYear")).to_have_value("2026")
+        expect(gross_page.locator("#closingQuarter")).to_have_value("4")
+        expect(gross_page.locator("#previousCash")).to_have_value("1593290.05")
+        expect(gross_page.locator("#previousDistribution")).to_have_value("402343.11")
+        expect(gross_page.locator("#previousDistribution")).to_have_js_property("readOnly", True)
+        # A future blank placeholder cannot be carried as a completed payout.
+        gross_page.locator("#closingYear").select_option("2027")
+        gross_page.locator("#closingQuarter").select_option("1")
+        expect(gross_page.locator("#previousDistribution")).to_have_value("0.00")
+        expect(gross_page.locator("#previousDistribution")).to_have_js_property("readOnly", False)
+        expect(gross_page.locator("#previousCash")).to_have_value("0.00")
+        # Older imported quarters without a saved gross total keep their
+        # original actual distribution; current partner minima are not invented.
+        gross_page.locator("#closingYear").select_option("2026")
+        gross_page.locator("#closingQuarter").select_option("3")
+        expect(gross_page.locator("#previousDistribution")).to_have_value("388482.30")
+        gross_page.locator("#closingQuarter").select_option("4")
+        expect(gross_page.locator("#previousDistribution")).to_have_value("402343.11")
+        for i in range(gross_page.locator("#bankFields input").count()):
+            gross_page.locator("#bankFields input").nth(i).fill("0")
+        gross_page.locator("#bankFields input").first.fill("1800000")
+        expect(gross_page.locator("#closingPreview")).to_contain_text("609.053,06")
+        gross_page.locator("#actualDistribution").fill("388000")
+        gross_page.locator("#saveClosing").click()
+        expect(gross_page.locator("#closingEditor")).not_to_be_visible()
+        gross_write = next(body for method, path, body in gross_mock.writes if method == "POST" and path == "closings")
+        assert gross_write["year"] == 2026 and gross_write["quarter"] == 4
+        assert gross_write["previousDistribution"] == 402343.11
+        assert gross_write["previousDistribution"] != 388803.53
+        assert gross_write["previousDistribution"] != 399528.21
+        gross_context.close()
+        print("PASS: next quarter carries gross distribution plus supplements before discounts, with safe legacy and pending fallback")
+
         # The minimum is an extra funded by the company, never a reduction of
         # the other partner's share. This pool deliberately differs from the
         # estimated cash-generated distribution in the quarter's source data.

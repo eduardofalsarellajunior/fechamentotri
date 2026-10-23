@@ -16,7 +16,9 @@ As configurações de URL do Supabase Auth devem usar o domínio principal `http
 
 Na visão geral, consulte os indicadores, o gráfico e o histórico. Use `+` em Caixa apurado para expandir a composição das contas e a memória de cálculo. Ano e busca filtram o histórico; Exportar gera CSV com saldos individuais e Imprimir usa o navegador.
 
-O administrador cadastra contas e sócios em Parametrização. Em Novo fechamento, seleciona o período e informa cada saldo. O sistema preenche o caixa e a distribuição efetiva anteriores a partir do histórico; esses campos permitem ajuste manual. Caixa gerado = soma das contas − caixa anterior + distribuição efetiva anterior. O percentual padrão é 90%.
+O administrador cadastra contas e sócios em Parametrização. Em Novo fechamento, seleciona o período e informa cada saldo. O sistema preenche o caixa anterior e a distribuição bruta anterior a partir do histórico. Caixa gerado = soma das contas − caixa anterior + total bruto com complementos do trimestre anterior. O percentual padrão é 90%.
+
+Para os próximos fechamentos, a distribuição anterior usa o **Total bruto com complementos** do período anterior, antes dos descontos. Esse valor é preenchido e conferido pelo servidor a partir do fechamento anterior. Na ausência de histórico, o administrador informa esse total manualmente. Registros importados sem complementos documentados mantêm o valor originalmente registrado. As memórias de cálculo já salvas são preservadas.
 
 Os mínimos e descontos dos sócios consideram três meses. Complementos até o mínimo são suportados pelo caixa do INEPAD. Resultado negativo não gera distribuição proporcional negativa; os mínimos continuam sendo aplicados. Descontos não tornam o pagamento líquido negativo.
 

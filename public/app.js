@@ -71,7 +71,7 @@ function normalizeHistory() {
   const byPeriod = new Map(records.filter(c => c.period).map(c => [c.period.order, c]));
   records = records.map(record => {
     const previous = byPeriod.get(record.period?.order - 1);
-    if (record.previousDistribution == null && previous && !previous.pending) record.previousDistribution = previous.actualDistribution;
+    if (record.previousDistribution == null && previous && !previous.pending) record.previousDistribution = previous.carryForwardDistribution;
     if (record.generatedCash == null && record.previousDistribution != null && !record.pending) record.generatedCash = roundMoney(record.currentCash - record.previousCash + record.previousDistribution);
     const savedParameters = record.rows?.distribution_basis === 'actual_distribution' && record.rows?.partner_parameters?.length ? record.rows.partner_parameters : null;
     const partners = savedParameters || state.partners;
@@ -165,7 +165,7 @@ function renderBreakdownContent(record) {
       <div class="calculation-explainer"><p class="eyebrow">Memória de cálculo</p>
         <div class="formula-line"><span>Caixa apurado</span><b>${record.pending ? '—' : money(record.currentCash)}</b></div>
         <div class="formula-line"><span>− Caixa do trimestre anterior</span><b>${record.pending ? '—' : money(record.previousCash)}</b></div>
-        <div class="formula-line"><span>+ Distribuição efetiva anterior</span><b>${record.pending ? '—' : money(record.previousDistribution)}</b></div>
+        <div class="formula-line"><span>+ Distribuição anterior${record.rows?.previous_distribution_basis === 'gross_with_complements' ? ' · bruto com complementos' : ''}</span><b>${record.pending ? '—' : money(record.previousDistribution)}</b></div>
         <div class="formula-line preview-total"><strong>Caixa gerado</strong><strong>${record.pending ? '—' : money(record.generatedCash)}</strong></div>
         <p class="muted">${record.pending ? 'Período reservado na planilha. Informe os saldos no novo fechamento.' : record.rows?.schemaVersion === 2 ? 'Calculado com os saldos e a distribuição do período anterior.' : 'Cálculo reconstituído dos saldos históricos. Os pagamentos efetivos são os registrados na planilha.'}</p>
       </div>
@@ -213,7 +213,12 @@ function updatePreviousPeriod() {
   const order = Number($('closingYear').value) * 4 + Number($('closingQuarter').value);
   const previous = records.find(c => c.period?.order === order - 1 && !c.pending);
   $('previousCash').value = previous ? previous.currentCash.toFixed(2) : '0.00';
-  $('previousDistribution').value = previous?.actualDistribution != null ? previous.actualDistribution.toFixed(2) : '0.00';
+  const gross = previous?.carryForwardDistribution;
+  $('previousDistribution').value = gross != null ? gross.toFixed(2) : '0.00';
+  $('previousDistribution').readOnly = gross != null;
+  $('previousDistributionHint').textContent = gross != null
+    ? `Total bruto com complementos de ${previous.period.label}, antes dos descontos.`
+    : 'Sem fechamento anterior disponível. Informe o total bruto, incluindo os complementos e antes dos descontos.';
   updatePreview();
 }
 

@@ -1,7 +1,7 @@
 'use strict';
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {parsePeriod, normalizeClosing, calculateClosing, calculatePartnerDistribution} = require('../public/model');
+const {parsePeriod, normalizeClosing, calculateClosing, calculatePartnerDistribution, grossDistributionForCarryForward} = require('../public/model');
 
 test('historical dates and current quarter keys sort chronologically', () => {
   assert.equal(parsePeriod('2026 30-Junho').key, '2026-Q2');
@@ -78,4 +78,24 @@ test('zero actual distribution still honors company-paid quarterly minimums and 
   assert.equal(result.totalComplement,300);
   assert.equal(result.totalDiscount,300);
   assert.equal(result.totalPayable,0);
+});
+
+test('next quarter carries gross including minimum extras, before discounts', () => {
+  const previous = {rows:{actual_distribution:388803.53,partner_distribution:{baseDistribution:388803.53,totalComplement:13539.58,totalGross:402343.11,totalDiscount:2814.90,totalPayable:399528.21}}};
+  const gross = grossDistributionForCarryForward(previous);
+  assert.equal(gross,402343.11);
+  const result = calculateClosing({balances:[1800000],previousCash:1593290.05,previousDistribution:gross,distributionPct:90});
+  assert.equal(result.generatedCash,609053.06);
+});
+
+test('gross can be recovered from saved parameters without using current partner settings', () => {
+  const previous = {rows:{distribution_basis:'actual_distribution',actual_distribution:1000,partner_parameters:[{id:'a',name:'A',share:20,minimum:100,discount:10},{id:'b',name:'B',share:80,minimum:0,discount:0}]}};
+  assert.equal(grossDistributionForCarryForward(previous),1100);
+  assert.equal(grossDistributionForCarryForward({rows:{distribution_basis:'actual_distribution',actual_distribution:1000,partner_rows:[{bruto:200,complement:100,desconto:30,total:270},{bruto:800,complement:0,desconto:0,total:800}]}}),1100);
+});
+
+test('legacy previous payouts stay documented and zero gross never falls back to a nonzero base', () => {
+  assert.equal(grossDistributionForCarryForward({rows:{actual_distribution:123.456}}),123.46);
+  assert.equal(grossDistributionForCarryForward({rows:{actual_distribution:100,partner_distribution:{totalGross:0}}}),0);
+  assert.equal(grossDistributionForCarryForward({rows:{}}),null);
 });

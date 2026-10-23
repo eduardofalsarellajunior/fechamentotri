@@ -157,6 +157,21 @@ function closingInput(overrides = {}) {
   return { year: 2027, quarter: 1, balances: [{ bankId: 'bank-1', value: 900 }, { bankId: 'bank-2', value: 600 }], previousCash: 1000, previousDistribution: 100, distributionPct: 90, actualDistribution: 0, ...overrides };
 }
 
+test('next closing uses the recorded previous gross even if the client sends base or net instead', async t => {
+  const previous = {id:'prior-quarter',quarter:'2026 4º Trimestre',current_cash:1000,previous_distribution:0,rows:{schemaVersion:2,balances:{Itaú:1000,XP:0},actual_distribution:200,partner_distribution:{baseDistribution:200,totalComplement:100,totalGross:300,totalDiscount:30,totalPayable:270}}};
+  const {handler,database} = fixture({initial:{closings:[previous]}});
+  const request = await withServer(t,handler);
+  const saved = await request('/api/closings',{method:'POST',data:closingInput({previousDistribution:270})});
+  assert.equal(saved.response.status,201);
+  const record=database.closings.find(closing=>closing.id!==previous.id);
+  assert.equal(record.previous_distribution,300);
+  assert.equal(record.rows.previous_distribution,300);
+  assert.equal(record.rows.generated_cash,800);
+  assert.equal(record.rows.previous_distribution_basis,'gross_with_complements');
+  assert.equal(record.rows.previous_closing_id,previous.id);
+  assert.deepEqual(database.closings[0],previous);
+});
+
 test('saving a closing recomputes cash while partner payouts use the actual distribution', async t => {
   const { handler, database } = fixture();
   const request = await withServer(t, handler);

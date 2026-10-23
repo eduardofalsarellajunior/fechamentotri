@@ -37,6 +37,7 @@
       distributionAmount: details.distribution_amount == null ? null : roundMoney(numeric(details.distribution_amount)),
       reinvestment: details.reinvestment == null ? null : roundMoney(numeric(details.reinvestment)),
       partnerRows: details.partner_rows || (Array.isArray(closing.rows) ? closing.rows : []), pending,
+      carryForwardDistribution: grossDistributionForCarryForward(closing),
     };
   }
 
@@ -91,5 +92,22 @@
     return {baseDistribution, partnerRows, totalComplement, totalDiscount, totalGross, totalPayable};
   }
 
-  return {roundMoney, parsePeriod, normalizeClosing, calculateClosing, calculatePartnerDistribution};
+  function grossDistributionForCarryForward(closing) {
+    if (!closing) return null;
+    const details = closing.rows && !Array.isArray(closing.rows) ? closing.rows : {};
+    const storedGross = details.partner_distribution?.totalGross;
+    if (storedGross != null && Number.isFinite(Number(storedGross)) && Number(storedGross) >= 0) return roundMoney(Number(storedGross));
+    if (details.distribution_basis === 'actual_distribution' && details.actual_distribution != null) {
+      if (Array.isArray(details.partner_parameters) && details.partner_parameters.length) {
+        return calculatePartnerDistribution({actualDistribution: details.actual_distribution, partners: details.partner_parameters}).totalGross;
+      }
+      if (Array.isArray(details.partner_rows) && details.partner_rows.length) {
+        return roundMoney(details.partner_rows.reduce((sum, partner) => sum + numeric(partner.bruto) + numeric(partner.complement), 0));
+      }
+    }
+    // Older imported quarters have no documented supplements: retain their recorded amount.
+    return details.actual_distribution == null ? null : roundMoney(numeric(details.actual_distribution));
+  }
+
+  return {roundMoney, parsePeriod, normalizeClosing, calculateClosing, calculatePartnerDistribution, grossDistributionForCarryForward};
 });
