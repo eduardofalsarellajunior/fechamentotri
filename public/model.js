@@ -46,19 +46,50 @@
     const generatedCash = roundMoney(currentCash - numeric(previousCash) + numeric(previousDistribution));
     const distributionAmount = roundMoney(Math.max(0, generatedCash) * numeric(distributionPct) / 100);
     const reinvestment = roundMoney(generatedCash - distributionAmount);
-    const partnerRows = partners.map(partner => {
-      const bruto = roundMoney(distributionAmount * numeric(partner.share) / 100);
-      const complement = roundMoney(Math.max(0, numeric(partner.minimum) * 3 - bruto));
-      const desconto = roundMoney(numeric(partner.discount) * 3);
-      return {id: partner.id, name: partner.name, share: numeric(partner.share), bruto, complement, desconto, total: roundMoney(Math.max(0, bruto + complement - desconto))};
-    });
+    const distribution = calculatePartnerDistribution({actualDistribution: distributionAmount, partners});
     return {
-      currentCash, generatedCash, distributionAmount, reinvestment, partnerRows,
-      totalComplement: roundMoney(partnerRows.reduce((sum, partner) => sum + partner.complement, 0)),
-      totalDiscount: roundMoney(partnerRows.reduce((sum, partner) => sum + partner.desconto, 0)),
-      totalPayable: roundMoney(partnerRows.reduce((sum, partner) => sum + partner.total, 0)),
+      currentCash, generatedCash, distributionAmount, reinvestment,
+      partnerRows: distribution.partnerRows, totalComplement: distribution.totalComplement,
+      totalDiscount: distribution.totalDiscount, totalPayable: distribution.totalPayable,
     };
   }
 
-  return {roundMoney, parsePeriod, normalizeClosing, calculateClosing};
+  function calculatePartnerDistribution({actualDistribution = 0, partners = []}) {
+    const baseDistribution = roundMoney(Math.max(0, numeric(actualDistribution)));
+    const poolCents = Math.round(baseDistribution * 100);
+    const allocations = partners.map((partner, index) => {
+      const exactCents = poolCents * Math.max(0, numeric(partner.share)) / 100;
+      return {index, cents: Math.floor(exactCents), fraction: exactCents - Math.floor(exactCents), key: String(partner.id || partner.name || index)};
+    });
+    const totalShare = partners.reduce((sum, partner) => sum + Math.max(0, numeric(partner.share)), 0);
+    // Allocate fractional cents deterministically, without reducing another partner to fund a minimum.
+    const targetCents = Math.round(poolCents * totalShare / 100);
+    let remainder = targetCents - allocations.reduce((sum, item) => sum + item.cents, 0);
+    for (const item of [...allocations].sort((a, b) => b.fraction - a.fraction || a.key.localeCompare(b.key))) {
+      if (remainder <= 0) break;
+      item.cents += 1; remainder -= 1;
+    }
+    const partnerRows = partners.map((partner, index) => {
+      const bruto = allocations[index].cents / 100;
+      const minimum = roundMoney(Math.max(0, numeric(partner.minimum)));
+      const discount = roundMoney(Math.max(0, numeric(partner.discount)));
+      const minimumQuarterly = roundMoney(minimum * 3);
+      const discountQuarterly = roundMoney(discount * 3);
+      const complement = roundMoney(Math.max(0, minimumQuarterly - bruto));
+      const gross = roundMoney(bruto + complement);
+      const desconto = Math.min(discountQuarterly, gross);
+      return {
+        id: partner.id, name: partner.name, share: numeric(partner.share), minimum, discount,
+        minimumQuarterly, discountQuarterly, bruto, complement, desconto,
+        total: roundMoney(gross - desconto),
+      };
+    });
+    const totalComplement = roundMoney(partnerRows.reduce((sum, row) => sum + row.complement, 0));
+    const totalDiscount = roundMoney(partnerRows.reduce((sum, row) => sum + row.desconto, 0));
+    const totalGross = roundMoney(partnerRows.reduce((sum, row) => sum + row.bruto + row.complement, 0));
+    const totalPayable = roundMoney(partnerRows.reduce((sum, row) => sum + row.total, 0));
+    return {baseDistribution, partnerRows, totalComplement, totalDiscount, totalGross, totalPayable};
+  }
+
+  return {roundMoney, parsePeriod, normalizeClosing, calculateClosing, calculatePartnerDistribution};
 });

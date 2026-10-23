@@ -4,6 +4,7 @@ const http = require('node:http');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { createAccessService, emailAddress } = require('./lib/access.js');
 
 const publicRoot = path.join(__dirname, 'public');
 const partnerFields = 'id,name,share,minimum,discount';
@@ -17,9 +18,10 @@ const mimeTypes = {
 };
 
 class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, code) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -83,6 +85,21 @@ function normalizeName(name) {
   return String(name).trim().normalize('NFKC').toLocaleLowerCase('pt-BR');
 }
 
+function distributionSnapshot(actualDistribution, partners) {
+  const { calculatePartnerDistribution } = require('./public/model.js');
+  const parameters = partners.map(({ id, name, share, minimum, discount }) => ({
+    id, name, share: Number(share), minimum: Number(minimum), discount: Number(discount)
+  }));
+  const distribution = calculatePartnerDistribution({ actualDistribution, partners: parameters });
+  const { baseDistribution, totalComplement, totalDiscount, totalGross, totalPayable } = distribution;
+  return {
+    distribution_basis: 'actual_distribution',
+    partner_parameters: parameters,
+    partner_distribution: { baseDistribution, totalComplement, totalDiscount, totalGross, totalPayable },
+    partner_rows: distribution.partnerRows
+  };
+}
+
 function createHandler({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
   function configuration() {
     if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
@@ -114,11 +131,15 @@ function createHandler({ env = process.env, fetchImpl = globalThis.fetch } = {})
     if (!response.ok) {
       const failure = await response.json().catch(() => ({}));
       if (failure.code === '23505') throw new HttpError(409, 'Este registro já existe. Atualize a página para conferi-lo.');
+      if (['email_exists', 'user_already_exists'].includes(failure.code)) throw new HttpError(409, 'Este e-mail já está cadastrado. Confira os acessos existentes.');
+      if (failure.code === 'weak_password') throw new HttpError(400, 'A senha não atende à política de segurança configurada no Supabase.');
       throw new HttpError(502, 'Não foi possível concluir a operação no banco de dados.');
     }
     if (response.status === 204) return null;
     return response.json().catch(() => null);
   }
+
+  const access = createAccessService({ request, adminEmail: env.ADMIN_EMAIL });
 
   async function rows(table, fields = '*') {
     const all = [];
@@ -151,24 +172,33 @@ function createHandler({ env = process.env, fetchImpl = globalThis.fetch } = {})
       throw new HttpError(401, 'Confirme seu e-mail para acessar o sistema.');
     }
     const isAdmin = Boolean(env.ADMIN_EMAIL) && account.email.trim().toLowerCase() === env.ADMIN_EMAIL.trim().toLowerCase();
-    return {
+    return { account, token: bearer[1], user: {
       id: account.id,
       name: isAdmin ? 'Eduardo' : (account.user_metadata?.full_name || account.email.split('@')[0]),
       email: account.email,
-      role: isAdmin ? 'admin' : 'partner'
-    };
+      role: isAdmin ? 'admin' : 'partner',
+      mustChangePassword: Boolean(account.app_metadata?.must_change_password)
+    } };
   }
 
   async function api(req, res, pathname) {
     if (req.method === 'GET' && pathname === '/api/config') {
       return json(res, 200, { url: env.SUPABASE_URL || '', anonKey: env.SUPABASE_ANON_KEY || '' });
     }
-    const user = await authenticate(req);
+    const { user, account, token } = await authenticate(req);
+    if (req.method === 'GET' && pathname === '/api/session') return json(res, 200, { user });
+    if (req.method === 'POST' && pathname === '/api/password-change') {
+      const body = await readBody(req);
+      await access.changePassword({ account, token, password: body.password });
+      return json(res, 200, { user: { ...user, mustChangePassword: false } });
+    }
+    if (user.mustChangePassword) throw new HttpError(403, 'Troque sua senha inicial antes de acessar o sistema.', 'PASSWORD_CHANGE_REQUIRED');
     if (req.method === 'GET' && pathname === '/api/bootstrap') {
       const [partners, banks, closings] = await Promise.all([
         rows('partners', partnerFields), rows('banks', 'id,name'), rows('closings')
       ]);
-      return json(res, 200, { user, partners, banks, closings });
+      const partnerRecords = user.role === 'admin' ? await access.emailsForPartners(partners) : partners;
+      return json(res, 200, { user, partners: partnerRecords, banks, closings });
     }
 
     if (user.role !== 'admin') throw new HttpError(403, 'Somente o administrador pode alterar os dados.');
@@ -197,6 +227,7 @@ function createHandler({ env = process.env, fetchImpl = globalThis.fetch } = {})
     const partnerRoute = /^\/api\/partners\/([\w-]+)$/.exec(pathname);
     if ((req.method === 'POST' && pathname === '/api/partners') || (req.method === 'PUT' && partnerRoute)) {
       const body = await readBody(req);
+      const email = emailAddress(body.email);
       const partner = {
         name: text(body.name, 'o nome do sócio'),
         share: number(body.share, 'participação', { max: 100, decimals: 4 }),
@@ -212,11 +243,18 @@ function createHandler({ env = process.env, fetchImpl = globalThis.fetch } = {})
       const persisted = partnerId ? partner : {
         ...partner, id: randomUUID(), role: 'partner', password_hash: '!SUPABASE_AUTH_MANAGED!'
       };
-      const created = await request(endpoint, {
-        method: partnerId ? 'PATCH' : 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify(persisted)
-      });
+      const login = await access.provisionPartner({ ...partner, id: partnerId || persisted.id }, email);
+      let created;
+      try {
+        created = await request(endpoint, {
+          method: partnerId ? 'PATCH' : 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify(persisted)
+        });
+      } catch (error) {
+        try { await login.rollback(); } catch { throw new HttpError(502, 'Não foi possível concluir o cadastro e reverter o acesso. Contate o administrador.', 'ACCESS_ROLLBACK_FAILED'); }
+        throw error;
+      }
       const { id, name, share, minimum, discount } = created[0];
-      return json(res, partnerId ? 200 : 201, { id, name, share, minimum, discount });
+      return json(res, partnerId ? 200 : 201, { id, name, share, minimum, discount, email: login.email, accessCreated: true, mustChangePassword: login.mustChangePassword });
     }
 
     const closingRoute = /^\/api\/closings\/([\w-]+)$/.exec(pathname);
@@ -228,10 +266,16 @@ function createHandler({ env = process.env, fetchImpl = globalThis.fetch } = {})
       if (!existing?.length) throw new HttpError(404, 'Este fechamento não foi encontrado.');
       const snapshot = existing[0];
       const details = Array.isArray(snapshot.rows) ? { partner_rows: snapshot.rows } : (snapshot.rows || {});
+      // Existing snapshots retain the parameters used for that closing. Imported
+      // historical records do not have them and use the currently registered partners.
+      const partners = Array.isArray(details.partner_parameters) && details.partner_parameters.length
+        ? details.partner_parameters
+        : await rows('partners', partnerFields);
+      const distribution = distributionSnapshot(actualDistribution, partners);
       const updated = await request(endpoint, {
         method: 'PATCH',
         headers: { Prefer: 'return=representation' },
-        body: JSON.stringify({ rows: { ...details, actual_distribution: actualDistribution } })
+        body: JSON.stringify({ rows: { ...details, actual_distribution: actualDistribution, ...distribution } })
       });
       if (!updated?.length) throw new HttpError(404, 'Este fechamento não foi encontrado.');
       return json(res, 200, updated[0]);
@@ -275,6 +319,7 @@ function createHandler({ env = process.env, fetchImpl = globalThis.fetch } = {})
       }
       const balances = Object.fromEntries(bankBalances.map(bank => [bank.name, bank.balance]));
       const result = calculateClosing({ balances: bankBalances.map(bank => bank.balance), previousCash, previousDistribution, distributionPct, partners });
+      const distribution = distributionSnapshot(actualDistribution, partners);
       const closing = {
         quarter: `${year} ${quarter}º Trimestre`,
         current_cash: result.currentCash,
@@ -291,7 +336,7 @@ function createHandler({ env = process.env, fetchImpl = globalThis.fetch } = {})
           generated_cash: result.generatedCash,
           distribution_amount: result.distributionAmount,
           reinvestment: result.reinvestment,
-          partner_rows: result.partnerRows
+          ...distribution
         }
       };
       const endpoint = '/rest/v1/closings' + (existing.length ? '?id=eq.' + encodeURIComponent(existing[0].id) : '');
@@ -326,7 +371,7 @@ function createHandler({ env = process.env, fetchImpl = globalThis.fetch } = {})
     } catch (error) {
       if (!res.headersSent) {
         const status = error.status || (error instanceof URIError ? 400 : 500);
-        json(res, status, { error: error.status ? error.message : 'Não foi possível concluir a operação. Tente novamente.' });
+        json(res, status, { error: error.status ? error.message : 'Não foi possível concluir a operação. Tente novamente.', ...(error.code ? { code: error.code } : {}) });
       } else {
         res.end();
       }

@@ -1,7 +1,7 @@
 'use strict';
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {parsePeriod, normalizeClosing, calculateClosing} = require('../public/model');
+const {parsePeriod, normalizeClosing, calculateClosing, calculatePartnerDistribution} = require('../public/model');
 
 test('historical dates and current quarter keys sort chronologically', () => {
   assert.equal(parsePeriod('2026 30-Junho').key, '2026-Q2');
@@ -48,4 +48,34 @@ test('empty imported future is pending; a saved all-zero closing remains complet
   const original = {quarter:'2026 4º Trimestre',current_cash:0,rows:{source:'history.xlsx',balances:{Itaú:0},actual_distribution:0}};
   assert.equal(normalizeClosing(original).pending,true);
   assert.equal(normalizeClosing({...original, rows:{...original.rows,schemaVersion:2,previous_cash:100,previous_distribution:20}}).pending,false);
+});
+
+test('actual distribution is the pool; minimum extras never diminish another partner', () => {
+  const result = calculatePartnerDistribution({actualDistribution:10000,partners:[
+    {id:'a',name:'A',share:10,minimum:20000,discount:100},
+    {id:'b',name:'B',share:90,minimum:0,discount:0},
+  ]});
+  assert.equal(result.partnerRows[0].bruto,1000);
+  assert.equal(result.partnerRows[0].minimumQuarterly,60000);
+  assert.equal(result.partnerRows[0].complement,59000);
+  assert.equal(result.partnerRows[0].desconto,300);
+  assert.equal(result.partnerRows[0].total,59700);
+  assert.equal(result.partnerRows[1].total,9000);
+  assert.equal(result.totalGross,69000);
+  assert.equal(result.totalPayable,68700);
+});
+
+test('fractional cent allocation preserves the exact actual pool and is stable by partner identity', () => {
+  const partners=[{id:'a',name:'A',share:33.33},{id:'b',name:'B',share:33.33},{id:'c',name:'C',share:33.34}];
+  const result=calculatePartnerDistribution({actualDistribution:0.01,partners});
+  assert.equal(result.partnerRows.reduce((sum,row)=>sum+row.bruto,0),0.01);
+  assert.equal(result.partnerRows.find(row=>row.id==='c').bruto,0.01);
+  assert.deepEqual(result.partnerRows.map(row=>row.total),[0,0,0.01]);
+});
+
+test('zero actual distribution still honors company-paid quarterly minimums and prevents negative net payments', () => {
+  const result=calculatePartnerDistribution({actualDistribution:0,partners:[{id:'a',name:'A',share:100,minimum:100,discount:200}]});
+  assert.equal(result.totalComplement,300);
+  assert.equal(result.totalDiscount,300);
+  assert.equal(result.totalPayable,0);
 });

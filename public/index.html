@@ -7,6 +7,7 @@
   <meta name="description" content="Fechamento trimestral, contas bancárias e distribuição de resultados do INEPAD.">
   <title>INEPAD · Gestão de caixa</title>
   <link rel="stylesheet" href="/public/style.css?v=20261023">
+  <link rel="stylesheet" href="/public/partners.css?v=20261023-2">
   <script src="/public/vendor/supabase-2.57.4.js" defer></script>
   <script src="/public/model.js?v=20261023" defer></script>
   <script src="/public/app.js?v=20261023" defer></script>
@@ -105,7 +106,24 @@
         <section id="settingsPage" class="page-section" hidden aria-label="Parametrização">
           <div class="settings-navigation" role="tablist" aria-label="Cadastros"><button type="button" class="settings-tab active" data-setting="banks" role="tab" aria-selected="true" aria-controls="banksPanel"><svg class="icon"><use href="#icon-bank"/></svg>Contas bancárias</button><button type="button" class="settings-tab" data-setting="partners" role="tab" aria-selected="false" aria-controls="partnersPanel">Sócios e distribuição</button></div><div id="settingsMessage" class="form-message" hidden role="status" aria-live="polite"></div>
           <section id="banksPanel" class="settings-panel panel" role="tabpanel" aria-label="Contas bancárias"><div class="panel-heading"><div><span class="section-kicker">CADASTROS</span><h2>Contas bancárias</h2><p>As contas ativas estarão disponíveis nos próximos fechamentos.</p></div></div><form id="bankForm" class="bank-add-form"><div class="field"><label for="bankName">Nome da conta</label><input id="bankName" name="name" maxlength="100" placeholder="Ex.: Itaú · Conta corrente" required></div><button class="button button-primary" type="submit"><svg class="icon"><use href="#icon-plus"/></svg>Adicionar conta</button></form><div id="banksList" class="banks-list"></div><p class="settings-footnote"><svg class="icon"><use href="#icon-shield"/></svg>A exclusão de uma conta preserva os saldos já registrados no histórico.</p></section>
-          <section id="partnersPanel" class="settings-panel" hidden role="tabpanel" aria-label="Sócios e distribuição"><div class="panel"><div class="panel-heading"><div><span class="section-kicker">DISTRIBUIÇÃO</span><h2>Parâmetros dos sócios</h2><p>Defina a participação e os ajustes mensais de cada sócio.</p></div></div><form id="partnerForm"><input id="partnerId" type="hidden"><div class="partner-form-grid"><div class="field"><label for="partnerName">Nome do sócio</label><input id="partnerName" name="name" maxlength="100" required placeholder="Nome completo"></div><div class="field"><label for="partnerShare">Participação (%)</label><input id="partnerShare" name="share" type="number" min="0" max="100" step="0.01" required placeholder="0,00"></div><div class="field"><label for="partnerMinimum">Mínimo mensal (R$)</label><input id="partnerMinimum" name="minimum" type="number" min="0" step="0.01" value="0" required></div><div class="field"><label for="partnerDiscount">Desconto mensal (R$)</label><input id="partnerDiscount" name="discount" type="number" min="0" step="0.01" value="0" required></div></div><div class="partner-form-bottom"><p class="muted">O mínimo e o desconto mensais são multiplicados por 3 no fechamento.</p><button id="cancelPartnerEdit" class="button button-secondary" hidden type="button">Cancelar edição</button><button class="button button-primary" type="submit">Adicionar sócio</button></div></form></div><div class="panel"><div class="panel-heading"><div><h2>Sócios cadastrados</h2><span id="shareTotal" class="badge badge-neutral">Participação: —</span><p>Os complementos individuais são suportados pelo caixa do INEPAD.</p></div></div><div id="partnersList"></div></div></section>
+          <section id="partnersPanel" class="settings-panel" hidden role="tabpanel" aria-label="Sócios e distribuição">
+            <div class="panel">
+              <div class="panel-heading"><div><span class="section-kicker">DISTRIBUIÇÃO E ACESSO</span><h2>Parâmetros dos sócios</h2><p>Cadastre o e-mail de acesso, a participação e os ajustes mensais de cada sócio.</p></div></div>
+              <form id="partnerForm">
+                <input id="partnerId" type="hidden">
+                <div class="partner-form-grid">
+                  <div class="field"><label for="partnerName">Nome do sócio</label><input id="partnerName" name="name" maxlength="100" required placeholder="Nome completo"></div>
+                  <div class="field"><label for="partnerEmail">E-mail de acesso <span aria-hidden="true">*</span></label><input id="partnerEmail" name="email" type="email" autocomplete="off" maxlength="254" required placeholder="socio@empresa.com.br"><small>Obrigatório. Este e-mail será o login do sócio.</small></div>
+                  <div class="field"><label for="partnerShare">Participação (%)</label><input id="partnerShare" name="share" type="number" min="0" max="100" step="0.01" required placeholder="0,00"></div>
+                  <div class="field"><label for="partnerMinimum">Mínimo mensal (R$)</label><input id="partnerMinimum" name="minimum" type="number" min="0" step="0.01" value="0" required></div>
+                  <div class="field"><label for="partnerDiscount">Desconto mensal (R$)</label><input id="partnerDiscount" name="discount" type="number" min="0" step="0.01" value="0" required></div>
+                </div>
+                <p class="partner-access-note">Novos acessos usam a senha temporária <strong>inepad123</strong>, com troca obrigatória antes de acessar os relatórios. Só você pode fazer fechamentos e alterar a parametrização. Senhas de contas existentes são preservadas.</p>
+                <div class="partner-form-bottom"><p class="muted">O mínimo e o desconto mensais são multiplicados por 3 no fechamento.</p><button id="cancelPartnerEdit" class="button button-secondary" hidden type="button">Cancelar edição</button><button class="button button-primary" type="submit">Adicionar sócio</button></div>
+              </form>
+            </div>
+            <div class="panel"><div class="panel-heading"><div><h2>Sócios cadastrados</h2><span id="shareTotal" class="badge badge-neutral">Participação: —</span><p>Os complementos individuais são suportados pelo caixa do INEPAD.</p></div></div><div id="partnersList"></div></div>
+          </section>
         </section>
         <footer class="workspace-footer"><span>INEPAD · Gestão de caixa</span><span>Transparência para cada decisão.</span></footer>
       </main>

@@ -12,23 +12,42 @@ const env = {
   ADMIN_EMAIL: 'EDUARDO@example.com'
 };
 
-function fixture({ admin = true, confirmed = true, failure = false, initial = {} } = {}) {
+function fixture({ admin = true, confirmed = true, failure = false, mustChangePassword = false, failPartnerWrite = false, initial = {} } = {}) {
   const database = {
     banks: [{ id: 'bank-1', name: 'Itaú' }, { id: 'bank-2', name: 'XP' }],
     partners: [{ id: 'partner-1', name: 'Eduardo', share: 100, minimum: 100, discount: 10, password_hash: 'never-expose' }],
     closings: [],
     ...structuredClone(initial)
   };
+  const authUsers = [{ id: 'user-1', email: admin ? 'eduardo@example.com' : 'reader@example.com', email_confirmed_at: confirmed ? '2026-01-01' : null, app_metadata: { partner_id: 'partner-1', must_change_password: mustChangePassword }, user_metadata: {} }];
   const calls = [];
   const mockFetch = async (input, options = {}) => {
     const url = new URL(input);
     calls.push({ url, method: options.method || 'GET', body: options.body });
     if (url.pathname === '/auth/v1/user') {
-      return Response.json({ id: 'user-1', email: admin ? 'eduardo@example.com' : 'reader@example.com', email_confirmed_at: confirmed ? '2026-01-01' : null });
+      return Response.json(authUsers[0]);
     }
     if (failure) return Response.json({ message: 'private backend exception' }, { status: 500 });
+    if (url.pathname === '/auth/v1/admin/users') {
+      if (!options.method || options.method === 'GET') return Response.json({ users: authUsers });
+      const created = { id: 'auth-created', ...JSON.parse(options.body) };
+      authUsers.push(created);
+      return Response.json(created, { status: 201 });
+    }
+    if (url.pathname.startsWith('/auth/v1/admin/users/')) {
+      const authId = url.pathname.split('/').pop();
+      const accountIndex = authUsers.findIndex(account => account.id === authId);
+      if (options.method === 'DELETE') {
+        if (accountIndex >= 0) authUsers.splice(accountIndex, 1);
+        return new Response(null, { status: 204 });
+      }
+      const update = JSON.parse(options.body);
+      authUsers[accountIndex] = { ...authUsers[accountIndex], ...update };
+      return Response.json(authUsers[accountIndex]);
+    }
     const table = url.pathname.split('/').pop();
     const method = options.method || 'GET';
+    if (failPartnerWrite && table === 'partners' && method !== 'GET') return Response.json({ error: 'database write failed' }, { status: 500 });
     if (method === 'GET') {
       const fields = url.searchParams.get('select');
       const idFilter = url.searchParams.get('id');
@@ -53,7 +72,7 @@ function fixture({ admin = true, confirmed = true, failure = false, initial = {}
     }
     throw new Error('Unexpected mocked operation');
   };
-  return { handler: createHandler({ env, fetchImpl: mockFetch }), database, calls };
+  return { handler: createHandler({ env, fetchImpl: mockFetch }), database, calls, authUsers };
 }
 
 async function withServer(t, handler) {
@@ -125,12 +144,12 @@ test('administrator creates persisted banks, rejects duplicates and preserves hi
 test('partner updates persist and cannot elevate roles or allocate over 100%', async t => {
   const { handler, database } = fixture();
   const request = await withServer(t, handler);
-  const update = await request('/api/partners/partner-1', { method: 'PUT', data: { name: 'Eduardo atualizado', share: 100, minimum: 1000, discount: 25, role: 'admin', password_hash: 'hijacked' } });
+  const update = await request('/api/partners/partner-1', { method: 'PUT', data: { name: 'Eduardo atualizado', email: 'eduardo@example.com', share: 100, minimum: 1000, discount: 25, role: 'admin', password_hash: 'hijacked' } });
   assert.equal(update.response.status, 200);
   assert.equal(database.partners[0].minimum, 1000);
   assert.equal(database.partners[0].password_hash, 'never-expose');
   assert.equal(update.body.password_hash, undefined);
-  const invalid = await request('/api/partners', { method: 'POST', data: { name: 'Other', share: 1, minimum: 0, discount: 0 } });
+  const invalid = await request('/api/partners', { method: 'POST', data: { name: 'Other', email: 'other@example.com', share: 1, minimum: 0, discount: 0 } });
   assert.equal(invalid.response.status, 400);
 });
 
@@ -138,10 +157,10 @@ function closingInput(overrides = {}) {
   return { year: 2027, quarter: 1, balances: [{ bankId: 'bank-1', value: 900 }, { bankId: 'bank-2', value: 600 }], previousCash: 1000, previousDistribution: 100, distributionPct: 90, actualDistribution: 0, ...overrides };
 }
 
-test('saving a closing recomputes totals on server and persists individual balances', async t => {
+test('saving a closing recomputes cash while partner payouts use the actual distribution', async t => {
   const { handler, database } = fixture();
   const request = await withServer(t, handler);
-  const saved = await request('/api/closings', { method: 'POST', data: closingInput({ current_cash: 999999, rows: { generated_cash: 999999 } }) });
+  const saved = await request('/api/closings', { method: 'POST', data: closingInput({ actualDistribution: 200, current_cash: 999999, rows: { generated_cash: 999999 } }) });
   assert.equal(saved.response.status, 201);
   const record = database.closings[0];
   assert.equal(record.current_cash, 1500);
@@ -151,7 +170,12 @@ test('saving a closing recomputes totals on server and persists individual balan
   assert.equal(record.rows.distribution_amount, 540);
   assert.equal(record.rows.reinvestment, 60);
   assert.deepEqual(record.rows.balances, { Itaú: 900, XP: 600 });
-  assert.equal(record.rows.partner_rows[0].total, 510);
+  assert.equal(record.rows.distribution_basis, 'actual_distribution');
+  assert.equal(record.rows.partner_rows[0].bruto, 200);
+  assert.equal(record.rows.partner_rows[0].complement, 100);
+  assert.equal(record.rows.partner_rows[0].total, 270);
+  assert.deepEqual(record.rows.partner_distribution, { baseDistribution: 200, totalComplement: 100, totalDiscount: 30, totalGross: 300, totalPayable: 270 });
+  assert.deepEqual(record.rows.partner_parameters, [{ id: 'partner-1', name: 'Eduardo', share: 100, minimum: 100, discount: 10 }]);
   assert.equal((await request('/api/closings', { method: 'POST', data: closingInput() })).response.status, 409);
 });
 
@@ -187,13 +211,22 @@ test('database errors are surfaced without exposing provider internals', async t
   assert.doesNotMatch(failed.body.error, /private backend exception/);
 });
 
-test('recording an actual payout changes only the distribution and preserves imported snapshots', async t => {
+test('recording an actual payout recalculates partners and preserves the imported financial data', async t => {
   const original = { id: 'closing-history', quarter: '2026 3º Trimestre', current_cash: 1500, previous_distribution: 1000, distribution_pct: 90, created_at: '2026-10-01', rows: { balances: { Itaú: 1000, XP: 500 }, actual_distribution: 0, source: 'original.xlsx', partner_rows: [{ name: 'Ana', total: 50 }] } };
   const { handler, database } = fixture({ initial: { closings: [original] } });
   const request = await withServer(t, handler);
   const saved = await request('/api/closings/closing-history', { method: 'PATCH', data: { actualDistribution: 350.55, current_cash: 0, quarter: '2027 1º Trimestre', rows: { balances: {} } } });
   assert.equal(saved.response.status, 200);
-  assert.deepEqual(database.closings[0], { ...original, rows: { ...original.rows, actual_distribution: 350.55 } });
+  const updated = database.closings[0];
+  const { rows: originalRows, ...originalFields } = original;
+  const { rows: updatedRows, ...updatedFields } = updated;
+  assert.deepEqual(updatedFields, originalFields);
+  assert.deepEqual(updatedRows.balances, originalRows.balances);
+  assert.equal(updatedRows.source, originalRows.source);
+  assert.equal(updatedRows.actual_distribution, 350.55);
+  assert.equal(updatedRows.partner_rows[0].bruto, 350.55);
+  assert.equal(updatedRows.partner_rows[0].total, 320.55);
+  assert.equal(updatedRows.distribution_basis, 'actual_distribution');
   assert.equal((await request('/api/closings/closing-history', { method: 'PATCH', data: { actualDistribution: -1 } })).response.status, 400);
   assert.equal((await request('/api/closings/closing-history', { method: 'PATCH', data: { actualDistribution: 1.001 } })).response.status, 400);
   assert.equal((await request('/api/closings/missing', { method: 'PATCH', data: { actualDistribution: 100 } })).response.status, 404);
@@ -205,4 +238,93 @@ test('readers cannot record payouts', async t => {
   const response = await request('/api/closings/closing-history', { method: 'PATCH', data: { actualDistribution: 10 } });
   assert.equal(response.response.status, 403);
   assert.equal(calls.filter(call => call.url.pathname.startsWith('/rest/')).length, 0);
+});
+
+test('minimum complements are extra company funds and do not reduce other partner shares', async t => {
+  const partners = [
+    { id: 'partner-a', name: 'A', share: 20, minimum: 100, discount: 10 },
+    { id: 'partner-b', name: 'B', share: 80, minimum: 0, discount: 0 }
+  ];
+  const { handler, database } = fixture({ initial: { partners } });
+  const request = await withServer(t, handler);
+  const saved = await request('/api/closings', { method: 'POST', data: closingInput({ actualDistribution: 1000 }) });
+  assert.equal(saved.response.status, 201);
+  const payout = database.closings[0].rows;
+  assert.deepEqual(payout.partner_rows.map(partner => [partner.bruto, partner.complement, partner.desconto, partner.total]), [[200, 100, 30, 270], [800, 0, 0, 800]]);
+  assert.deepEqual(payout.partner_distribution, { baseDistribution: 1000, totalComplement: 100, totalDiscount: 30, totalGross: 1100, totalPayable: 1070 });
+});
+
+test('changing actual distribution uses saved partner parameters rather than later parameter edits', async t => {
+  const parameters = [
+    { id: 'partner-a', name: 'A', share: 70, minimum: 400, discount: 50 },
+    { id: 'partner-b', name: 'B', share: 30, minimum: 0, discount: 0 }
+  ];
+  const closing = { id: 'saved', quarter: '2026 3º Trimestre', current_cash: 1500, previous_distribution: 1000, distribution_pct: 90, rows: { balances: { Itaú: 1000, XP: 500 }, actual_distribution: 0, partner_parameters: parameters, generated_cash: 600, distribution_amount: 540 } };
+  const { handler, database } = fixture({ initial: { closings: [closing] } });
+  const request = await withServer(t, handler);
+  const saved = await request('/api/closings/saved', { method: 'PATCH', data: { actualDistribution: 1000 } });
+  assert.equal(saved.response.status, 200);
+  const payout = database.closings[0].rows;
+  assert.deepEqual(payout.partner_parameters, parameters);
+  assert.deepEqual(payout.partner_rows.map(partner => [partner.share, partner.bruto, partner.complement, partner.desconto, partner.total]), [[70, 700, 500, 150, 1050], [30, 300, 0, 0, 300]]);
+  assert.equal(payout.partner_distribution.totalPayable, 1350);
+  assert.deepEqual(payout.balances, closing.rows.balances);
+  assert.equal(payout.generated_cash, 600);
+  assert.equal(payout.distribution_amount, 540);
+});
+
+test('initial-password accounts can inspect their session but cannot access financial data before changing it', async t => {
+  const { handler, calls } = fixture({ admin: false, mustChangePassword: true });
+  const request = await withServer(t, handler);
+  const session = await request('/api/session');
+  assert.equal(session.response.status, 200);
+  assert.equal(session.body.user.mustChangePassword, true);
+  assert.equal(session.body.user.role, 'partner');
+  const blocked = await request('/api/bootstrap');
+  assert.equal(blocked.response.status, 403);
+  assert.equal(blocked.body.code, 'PASSWORD_CHANGE_REQUIRED');
+  assert.equal(calls.filter(call => call.url.pathname.startsWith('/rest/')).length, 0);
+  assert.equal((await request('/api/closings', { method: 'POST', data: closingInput() })).response.status, 403);
+});
+
+test('changing the initial password unlocks only ordinary reader access', async t => {
+  const { handler, authUsers, calls } = fixture({ admin: false, mustChangePassword: true });
+  const request = await withServer(t, handler);
+  assert.equal((await request('/api/password-change', { method: 'POST', data: { password: 'inepad123' } })).response.status, 400);
+  assert.equal(authUsers[0].app_metadata.must_change_password, true);
+  const changed = await request('/api/password-change', { method: 'POST', data: { password: 'new-personal-password' } });
+  assert.equal(changed.response.status, 200);
+  assert.equal(changed.body.user.mustChangePassword, false);
+  assert.equal(authUsers[0].app_metadata.must_change_password, false);
+  assert.equal(calls.some(call => call.url.pathname === '/auth/v1/user' && call.method === 'PUT'), true);
+  assert.equal((await request('/api/bootstrap')).response.status, 200);
+  assert.equal((await request('/api/closings', { method: 'POST', data: closingInput() })).response.status, 403);
+  assert.equal((await request('/api/partners', { method: 'POST', data: {} })).response.status, 403);
+});
+
+test('partner creation requires e-mail and provisions a first-login account without storing passwords in financial data', async t => {
+  const { handler, database, authUsers } = fixture({ initial: { partners: [] } });
+  const request = await withServer(t, handler);
+  const partner = { name: 'Novo sócio', share: 100, minimum: 1000, discount: 25 };
+  assert.equal((await request('/api/partners', { method: 'POST', data: partner })).response.status, 400);
+  const saved = await request('/api/partners', { method: 'POST', data: { ...partner, email: 'new@example.com' } });
+  assert.equal(saved.response.status, 201);
+  assert.equal(saved.body.email, 'new@example.com');
+  const account = authUsers.find(user => user.email === 'new@example.com');
+  assert.equal(account.password, 'inepad123');
+  assert.equal(account.app_metadata.must_change_password, true);
+  assert.equal(account.app_metadata.partner_id, database.partners[0].id);
+  assert.equal(database.partners[0].password_hash, '!SUPABASE_AUTH_MANAGED!');
+  const bootstrap = await request('/api/bootstrap');
+  assert.equal(bootstrap.body.partners[0].email, 'new@example.com');
+});
+
+test('financial persistence failure compensates only the account created by that request', async t => {
+  const { handler, database, authUsers } = fixture({ failPartnerWrite: true, initial: { partners: [] } });
+  const request = await withServer(t, handler);
+  const failed = await request('/api/partners', { method: 'POST', data: { name: 'Novo', email: 'new@example.com', share: 100, minimum: 0, discount: 0 } });
+  assert.equal(failed.response.status, 502);
+  assert.equal(database.partners.length, 0);
+  assert.equal(authUsers.length, 1);
+  assert.equal(authUsers[0].email, 'eduardo@example.com');
 });

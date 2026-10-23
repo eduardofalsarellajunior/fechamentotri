@@ -1,7 +1,7 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const {roundMoney, normalizeClosing, calculateClosing} = window.INEPADModel;
+const {roundMoney, normalizeClosing, calculateClosing, calculatePartnerDistribution} = window.INEPADModel;
 const currency = new Intl.NumberFormat('pt-BR', {style: 'currency', currency: 'BRL'});
 const money = value => value == null ? '—' : currency.format(Number(value));
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[char]));
@@ -39,6 +39,7 @@ async function api(path, options = {}) {
   try { data = await response.json(); } catch { throw new Error('O servidor não respondeu como esperado. Tente novamente.'); }
   if (!response.ok) {
     if (response.status === 401) showAuth('login');
+    if (response.status === 403 && data.code === 'PASSWORD_CHANGE_REQUIRED') showAuth('firstAccess');
     throw new Error(data.error || 'Não foi possível concluir a operação.');
   }
   return data;
@@ -47,16 +48,19 @@ async function api(path, options = {}) {
 function showAuth(mode = 'login') {
   authMode = mode;
   $('authScreen').hidden = false; $('appShell').hidden = true;
-  $('email').closest('.field').hidden = mode === 'reset'; $('email').required = mode !== 'reset';
+  const changingPassword = mode === 'reset' || mode === 'firstAccess';
+  $('email').closest('.field').hidden = changingPassword; $('email').required = !changingPassword;
   $('passwordField').hidden = mode === 'recovery'; $('password').required = mode !== 'recovery';
-  $('password').autocomplete = mode === 'reset' ? 'new-password' : 'current-password';
-  $('password').minLength = mode === 'reset' ? 8 : 1;
-  $('passwordConfirmField').hidden = mode !== 'reset'; $('passwordConfirm').required = mode === 'reset';
+  $('password').autocomplete = changingPassword ? 'new-password' : 'current-password';
+  $('password').minLength = changingPassword ? 8 : 1;
+  $('passwordConfirmField').hidden = !changingPassword; $('passwordConfirm').required = changingPassword;
   $('showRecovery').hidden = mode !== 'login'; $('showLogin').hidden = mode === 'login';
+  $('showLogin').textContent = mode === 'firstAccess' ? 'Sair e usar outra conta' : 'Voltar para o acesso';
   const content = {
     login: ['Bem-vindo de volta', 'Acesse os fechamentos e acompanhe a evolução do caixa.', 'Entrar na plataforma'],
     recovery: ['Recuperar acesso', 'Informe seu e-mail para receber um link de redefinição de senha.', 'Enviar link de recuperação'],
     reset: ['Crie uma nova senha', 'Use pelo menos 8 caracteres e escolha uma senha que você ainda não utilizou.', 'Salvar nova senha'],
+    firstAccess: ['Defina sua senha pessoal', 'Este é seu primeiro acesso. Troque a senha temporária por uma senha pessoal com pelo menos 8 caracteres para continuar.', 'Salvar senha e acessar'],
   }[mode];
   $('authTitle').textContent = content[0]; $('authDescription').textContent = content[1]; $('authSubmit').textContent = content[2];
   message('authMessage');
@@ -69,12 +73,23 @@ function normalizeHistory() {
     const previous = byPeriod.get(record.period?.order - 1);
     if (record.previousDistribution == null && previous && !previous.pending) record.previousDistribution = previous.actualDistribution;
     if (record.generatedCash == null && record.previousDistribution != null && !record.pending) record.generatedCash = roundMoney(record.currentCash - record.previousCash + record.previousDistribution);
+    const savedParameters = record.rows?.distribution_basis === 'actual_distribution' && record.rows?.partner_parameters?.length ? record.rows.partner_parameters : null;
+    const partners = savedParameters || state.partners;
+    record.partnerRows = [];
+    if (!record.pending && record.actualDistribution != null && partners.length) {
+      record.partnerDistribution = calculatePartnerDistribution({actualDistribution: record.actualDistribution, partners});
+      record.partnerRows = record.partnerDistribution.partnerRows;
+      record.distributionSaved = Boolean(savedParameters);
+    }
     return record;
   });
 }
 
 async function load() {
-  const id = ++refreshId, data = await api('/bootstrap');
+  const id = ++refreshId;
+  const access = await api('/session');
+  if (access.user.mustChangePassword) { showAuth('firstAccess'); return; }
+  const data = await api('/bootstrap');
   if (id !== refreshId) return;
   state = data; normalizeHistory();
   $('authScreen').hidden = true; $('appShell').hidden = false;
@@ -140,7 +155,23 @@ function renderHistory() {
 
 function renderBreakdownContent(record) {
   const balances = Object.entries(record.balances), rows = record.partnerRows || [];
-  return `<div class="breakdown-panel"><div class="breakdown-grid"><div><p class="eyebrow">Composição do caixa</p><h3>${esc(record.period?.label || record.quarter)}</h3><div class="account-breakdown">${balances.length ? balances.map(([name, value]) => `<div class="account-row"><span>${esc(name)}</span><b class="amount">${record.pending ? '—' : money(value)}</b></div>`).join('') : '<p class="muted">Este fechamento não contém saldos por conta.</p>'}<div class="account-row account-total"><strong>Caixa apurado</strong><strong class="amount">${record.pending ? '—' : money(record.currentCash)}</strong></div></div></div><div class="calculation-explainer"><p class="eyebrow">Memória de cálculo</p><div class="formula-line"><span>Caixa apurado</span><b>${record.pending ? '—' : money(record.currentCash)}</b></div><div class="formula-line"><span>− Caixa do trimestre anterior</span><b>${record.pending ? '—' : money(record.previousCash)}</b></div><div class="formula-line"><span>+ Distribuição efetiva anterior</span><b>${record.pending ? '—' : money(record.previousDistribution)}</b></div><div class="formula-line preview-total"><strong>Caixa gerado</strong><strong>${record.pending ? '—' : money(record.generatedCash)}</strong></div><p class="muted">${record.pending ? 'Período reservado na planilha. Informe os saldos no novo fechamento.' : record.rows?.schemaVersion === 2 ? 'Calculado com os saldos e a distribuição do período anterior.' : 'Cálculo reconstituído dos saldos históricos. Os pagamentos efetivos são os registrados na planilha.'}</p></div></div>${rows.length ? `<div class="distribution-detail"><h3>Distribuição por sócio</h3>${partnerTable(rows)}</div>` : '<p class="muted history-note">O histórico importado contém o total distribuído; não há rateio individual por sócio na planilha.</p>'}</div>`;
+  return `<div class="breakdown-panel">
+    <div class="breakdown-grid">
+      <div><p class="eyebrow">Composição do caixa</p><h3>${esc(record.period?.label || record.quarter)}</h3>
+        <div class="account-breakdown">${balances.length ? balances.map(([name, value]) => `<div class="account-row"><span>${esc(name)}</span><b class="amount">${record.pending ? '—' : money(value)}</b></div>`).join('') : '<p class="muted">Este fechamento não contém saldos por conta.</p>'}
+          <div class="account-row account-total"><strong>Caixa apurado</strong><strong class="amount">${record.pending ? '—' : money(record.currentCash)}</strong></div>
+        </div>
+      </div>
+      <div class="calculation-explainer"><p class="eyebrow">Memória de cálculo</p>
+        <div class="formula-line"><span>Caixa apurado</span><b>${record.pending ? '—' : money(record.currentCash)}</b></div>
+        <div class="formula-line"><span>− Caixa do trimestre anterior</span><b>${record.pending ? '—' : money(record.previousCash)}</b></div>
+        <div class="formula-line"><span>+ Distribuição efetiva anterior</span><b>${record.pending ? '—' : money(record.previousDistribution)}</b></div>
+        <div class="formula-line preview-total"><strong>Caixa gerado</strong><strong>${record.pending ? '—' : money(record.generatedCash)}</strong></div>
+        <p class="muted">${record.pending ? 'Período reservado na planilha. Informe os saldos no novo fechamento.' : record.rows?.schemaVersion === 2 ? 'Calculado com os saldos e a distribuição do período anterior.' : 'Cálculo reconstituído dos saldos históricos. Os pagamentos efetivos são os registrados na planilha.'}</p>
+      </div>
+    </div>
+    ${rows.length ? `<div class="distribution-detail"><h3>Distribuição por sócio</h3>${distributionSummary(record.partnerDistribution, record.distributionSaved)}${partnerTable(rows)}</div>` : '<p class="muted history-note">Cadastre os sócios para calcular o rateio a partir da distribuição efetiva deste trimestre.</p>'}
+  </div>`;
 }
 
 function renderBreakdown(record) {
@@ -150,7 +181,11 @@ function renderBreakdown(record) {
 }
 
 function partnerTable(rows) {
-  return `<div class="table-scroll"><table><thead><tr><th>Sócio</th><th>Participação</th><th>Base</th><th>Complemento</th><th>Desconto trimestral</th><th>Total líquido</th></tr></thead><tbody>${rows.map(partner => `<tr><td>${esc(partner.name)}</td><td>${Number(partner.share)}%</td><td class="amount">${money(partner.bruto)}</td><td class="amount">${money(partner.complement)}</td><td class="amount">${money(partner.desconto)}</td><td class="amount"><strong>${money(partner.total)}</strong></td></tr>`).join('')}</tbody></table></div>`;
+  return `<div class="table-scroll"><table><thead><tr><th>Sócio</th><th>Participação</th><th>Base proporcional</th><th>Mínimo trimestral</th><th>Extra do INEPAD</th><th>Desconto trimestral</th><th>Total líquido</th></tr></thead><tbody>${rows.map(partner => `<tr><td>${esc(partner.name)}</td><td>${Number(partner.share)}%</td><td class="amount">${money(partner.bruto)}</td><td class="amount">${money(partner.minimumQuarterly)}</td><td class="amount">${money(partner.complement)}</td><td class="amount">${money(partner.desconto)}</td><td class="amount"><strong>${money(partner.total)}</strong></td></tr>`).join('')}</tbody></table></div>`;
+}
+
+function distributionSummary(distribution, saved = false) {
+  return `<div class="distribution-totals"><div><span>Distribuição efetiva usada no rateio</span><strong>${money(distribution.baseDistribution)}</strong></div><div><span>Complemento extra do INEPAD</span><strong>${money(distribution.totalComplement)}</strong></div><div><span>Total bruto com complementos</span><strong>${money(distribution.totalGross)}</strong></div><div><span>Descontos trimestrais</span><strong>${money(distribution.totalDiscount)}</strong></div><div class="net-distribution"><span>Total líquido aos sócios</span><strong>${money(distribution.totalPayable)}</strong></div></div><p class="muted distribution-note">Mínimo mensal × 3 e desconto mensal × 3. O complemento é pago como extra pelo INEPAD e não reduz a parcela dos demais sócios. ${saved ? 'Parâmetros registrados neste fechamento.' : 'Rateio calculado com os parâmetros atuais dos sócios.'}</p>`;
 }
 
 function beginClosing() {
@@ -187,11 +222,13 @@ function closingValues() {
 }
 
 function updatePreview() {
-  const values = closingValues(), result = calculateClosing({...values, balances: values.balances.map(b => b.value), partners: state.partners});
+  const values = closingValues();
+  const effective = calculatePartnerDistribution({actualDistribution: values.actualDistribution ?? 0, partners: state.partners});
+  const result = {...calculateClosing({...values, balances: values.balances.map(b => b.value), partners: state.partners}), totalComplement: effective.totalComplement, totalPayable: effective.totalPayable};
   const share = roundMoney(state.partners.reduce((sum, p) => sum + Number(p.share), 0));
   const entered = [...document.querySelectorAll('[data-bank-id]')].filter(input => input.value !== '').length;
   $('closingPreview').innerHTML = `<div class="preview-heading"><p class="eyebrow">Prévia do fechamento</p><span class="badge badge-neutral">${entered}/${state.banks.length} contas preenchidas</span></div><div class="formula-line"><span>Soma das contas</span><b>${money(result.currentCash)}</b></div><div class="formula-line"><span>− Caixa anterior</span><b>${money(values.previousCash)}</b></div><div class="formula-line"><span>+ Distribuição anterior</span><b>${money(values.previousDistribution)}</b></div><div class="formula-line preview-total"><strong>Caixa gerado</strong><strong>${money(result.generatedCash)}</strong></div><div class="preview-stat"><span>Distribuição · ${values.distributionPct}%</span><strong>${money(result.distributionAmount)}</strong></div><div class="preview-stat"><span>${result.reinvestment < 0 ? 'Variação negativa do caixa' : 'Reinvestimento'}</span><strong>${money(result.reinvestment)}</strong></div>${result.totalComplement ? `<div class="formula-line"><span>Complementos mínimos</span><b>${money(result.totalComplement)}</b></div>` : ''}${state.partners.length ? `<div class="formula-line"><span>Total líquido aos sócios</span><b>${money(result.totalPayable)}</b></div>` : ''}${!state.partners.length ? '<p class="muted">Cadastre os sócios para calcular o rateio individual.</p>' : share !== 100 ? `<p class="field-error">As participações somam ${share}%. Ajuste para 100% em Parametrização antes de salvar.</p>` : ''}`;
-  $('distributionRows').innerHTML = result.partnerRows.length ? partnerTable(result.partnerRows) : '<p class="empty-state">Cadastre os sócios em Parametrização para visualizar o rateio. Você pode salvar os saldos e a distribuição total enquanto isso.</p>';
+  $('distributionRows').innerHTML = effective.partnerRows.length ? `${distributionSummary(effective)}${partnerTable(effective.partnerRows)}` : '<p class="empty-state">Cadastre os sócios em Parametrização para visualizar o rateio. Você pode salvar os saldos e a distribuição total enquanto isso.</p>';
   $('saveClosing').disabled = saving || !state.banks.length || (state.partners.length > 0 && share !== 100);
 }
 
@@ -212,7 +249,10 @@ async function saveClosing(event) {
 
 function renderSettings() {
   $('banksList').innerHTML = state.banks.length ? state.banks.map(bank => `<div class="bank-item"><span class="bank-initial" aria-hidden="true">${esc(bank.name.slice(0, 1))}</span><div><strong>${esc(bank.name)}</strong><p class="muted">Disponível para os próximos fechamentos</p></div><button class="icon-button delete-button" data-delete-bank="${esc(bank.id)}" type="button" aria-label="Excluir conta ${esc(bank.name)}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 6h18M9 6V4h6v2M6 6l1 14h10l1-14M10 10v6M14 10v6"/></svg></button></div>`).join('') : '<div class="empty-state"><strong>Nenhuma conta cadastrada</strong><p>Adicione as contas que compõem o caixa do INEPAD.</p></div>';
-  $('partnersList').innerHTML = state.partners.length ? state.partners.map(partner => `<div class="partner-item"><div class="partner-top"><strong>${esc(partner.name)}</strong><button type="button" class="small-button" data-edit-partner="${esc(partner.id)}">Editar</button></div><div class="partner-facts"><span>Participação<b>${Number(partner.share)}%</b></span><span>Mínimo mensal<b>${money(partner.minimum)}</b></span><span>Desconto mensal<b>${money(partner.discount)}</b></span></div></div>`).join('') : '<div class="empty-state"><strong>Quem participa da distribuição?</strong><p>Cadastre os sócios e suas participações para calcular os próximos fechamentos.</p></div>';
+  $('partnersList').innerHTML = state.partners.length ? state.partners.map(partner => `
+    <div class="partner-item"><div class="partner-top"><div><strong>${esc(partner.name)}</strong><span class="partner-email">${partner.email ? esc(partner.email) : '<span class="badge badge-neutral">E-mail pendente</span>'}</span>${partner.mustChangePassword ? '<span class="badge badge-neutral">Troca de senha no primeiro acesso</span>' : ''}</div><button type="button" class="small-button" data-edit-partner="${esc(partner.id)}">Editar</button></div>
+      <div class="partner-facts"><span>Participação<b>${Number(partner.share)}%</b></span><span>Mínimo mensal<b>${money(partner.minimum)}</b></span><span>Desconto mensal<b>${money(partner.discount)}</b></span></div>
+    </div>`).join('') : '<div class="empty-state"><strong>Quem participa da distribuição?</strong><p>Cadastre os sócios e suas participações para calcular os próximos fechamentos.</p></div>';
   const total = roundMoney(state.partners.reduce((sum, partner) => sum + Number(partner.share), 0));
   if ($('shareTotal')) { $('shareTotal').textContent = `${total}% de 100% cadastrados`; $('shareTotal').classList.toggle('negative', total !== 100); }
   if (!$('closingEditor').hidden) { renderBankFields(true); updatePreview(); }
@@ -221,6 +261,7 @@ function renderSettings() {
 function editPartner(id) {
   const partner = state.partners.find(p => p.id === id);
   if (!partner) return;
+  $('partnerEmail').value = partner.email || '';
   $('partnerId').value = id; $('partnerName').value = partner.name; $('partnerShare').value = partner.share; $('partnerMinimum').value = partner.minimum; $('partnerDiscount').value = partner.discount;
   $('cancelPartnerEdit').hidden = false; $('partnerForm').querySelector('[type="submit"]').textContent = 'Salvar alterações'; $('partnerName').focus();
 }
@@ -301,14 +342,20 @@ $('bankForm').addEventListener('submit', async event => {
 });
 $('partnerForm').addEventListener('submit', async event => {
   event.preventDefault(); const button = event.currentTarget.querySelector('[type="submit"]'), id = $('partnerId').value;
-  const data = {name: $('partnerName').value.trim(), share: Number($('partnerShare').value), minimum: Number($('partnerMinimum').value), discount: Number($('partnerDiscount').value)};
+  const data = {name: $('partnerName').value.trim(), email: $('partnerEmail').value.trim().toLowerCase(), share: Number($('partnerShare').value), minimum: Number($('partnerMinimum').value), discount: Number($('partnerDiscount').value)};
   button.disabled = true; message('settingsMessage');
   try { await api(`/partners${id ? '/' + encodeURIComponent(id) : ''}`, {method: id ? 'PUT' : 'POST', body: JSON.stringify(data)}); resetPartnerForm(); await load(); toast(id ? 'Parâmetros atualizados para os próximos fechamentos.' : 'Sócio cadastrado.'); }
   catch (error) { message('settingsMessage', errorText(error)); } finally { button.disabled = false; }
 });
 
 $('showRecovery').addEventListener('click', () => showAuth('recovery'));
-$('showLogin').addEventListener('click', () => { recoveryMode = false; showAuth('login'); });
+$('showLogin').addEventListener('click', async () => {
+  if (authMode === 'firstAccess') {
+    try { const {error} = await authClient.auth.signOut({scope: 'local'}); if (error) throw error; session = null; }
+    catch (error) { return message('authMessage', errorText(error)); }
+  }
+  recoveryMode = false; showAuth('login');
+});
 $('togglePassword').addEventListener('click', () => {
   const reveal = $('password').type === 'password'; $('password').type = reveal ? 'text' : 'password';
   $('togglePassword').setAttribute('aria-label', reveal ? 'Ocultar senha' : 'Mostrar senha'); $('togglePassword').setAttribute('aria-pressed', String(reveal));
@@ -331,9 +378,12 @@ $('authForm').addEventListener('submit', async event => {
     if (authMode === 'recovery') {
       const {error} = await authClient.auth.resetPasswordForEmail($('email').value.trim(), {redirectTo: location.origin + '/'}); if (error) throw error;
       message('authMessage', 'Se este e-mail estiver cadastrado, você receberá um link de recuperação. Confira também o spam.', true);
-    } else if (authMode === 'reset') {
+    } else if (authMode === 'reset' || authMode === 'firstAccess') {
       if ($('password').value !== $('passwordConfirm').value) throw new Error('As senhas não conferem. Digite a mesma senha nos dois campos.');
-      const {error} = await authClient.auth.updateUser({password: $('password').value}); if (error) throw error;
+      if ($('password').value === 'inepad123') throw new Error('Escolha uma senha pessoal diferente da senha temporária.');
+      await api('/password-change', {method: 'POST', body: JSON.stringify({password: $('password').value})});
+      const {data, error} = await authClient.auth.refreshSession(); if (error) throw error;
+      session = data.session;
       recoveryMode = false; history.replaceState({}, '', location.pathname); $('password').value = ''; $('passwordConfirm').value = ''; await load(); toast('Senha atualizada com sucesso.');
     } else {
       const {data, error} = await authClient.auth.signInWithPassword({email: $('email').value.trim(), password: $('password').value}); if (error) throw error;

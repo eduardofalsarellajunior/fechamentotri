@@ -18,8 +18,8 @@ BANKS = [
     {"id": "bank-verum", "name": "Verum"},
 ]
 PARTNERS = [
-    {"id": "partner-eduardo", "name": "Eduardo", "share": 60, "minimum": 7000, "discount": 350},
-    {"id": "partner-ana", "name": "Ana", "share": 40, "minimum": 5000, "discount": 200},
+    {"id": "partner-eduardo", "name": "Eduardo", "email": "eduardo@example.test", "share": 60, "minimum": 7000, "discount": 350},
+    {"id": "partner-ana", "name": "Ana", "email": "ana@example.test", "share": 40, "minimum": 5000, "discount": 200},
 ]
 
 
@@ -56,6 +56,7 @@ AUTH_STUB = r"""window.supabase = { createClient() {
   } : null;
   return {auth: {
     async getSession() {return {data:{session:session()},error:null};},
+    async refreshSession() {return {data:{session:session()},error:null};},
     onAuthStateChange(callback) {
       listeners.push(callback);
       if (location.hash.includes('type=recovery')) setTimeout(()=>callback('PASSWORD_RECOVERY', session()),10);
@@ -89,20 +90,31 @@ class StaticHandler(SimpleHTTPRequestHandler):
 
 
 class MockAPI:
-    def __init__(self, role="admin"):
+    def __init__(self, role="admin", must_change_password=False):
         self.state = copy.deepcopy(FIXTURE)
         self.state["user"]["role"] = role
         self.writes = []
+        self.reads = []
+        self.must_change_password = must_change_password
 
     def route(self, route):
         request = route.request
         path = request.url.split("/api/")[-1].split("?")[0]
+        if request.method == "GET":
+            self.reads.append(path)
         if path == "config":
             return route.fulfill(json={"url": "https://offline.example.test", "anonKey": "offline-public-key"})
         if path == "bootstrap":
+            if self.must_change_password:
+                return route.fulfill(status=403, json={"error": "Altere sua senha inicial para continuar."})
             return route.fulfill(json=self.state)
+        if path == "session":
+            return route.fulfill(json={"user": {**self.state["user"], "mustChangePassword": self.must_change_password}})
         body = request.post_data_json if request.post_data else None
         self.writes.append((request.method, path, body))
+        if path == "password-change":
+            self.must_change_password = False
+            return route.fulfill(json={"ok": True, "user": {**self.state["user"], "mustChangePassword": False}})
         if path == "banks" and request.method == "POST":
             item = {"id": "bank-new", "name": body["name"]}
             self.state["banks"].append(item)
@@ -180,8 +192,17 @@ def run():
         page.keyboard.press("Enter")
         expect(page.locator("#historyBody .history-toggle").first).to_have_attribute("aria-expanded", "false")
         page.locator("#historyBody .history-toggle").nth(1).click()
+        historical_detail = page.locator("#historyBody .detail-row:visible").first
+        historical_distribution = historical_detail.locator(".distribution-detail")
+        expect(historical_distribution).to_be_visible()
+        expect(historical_distribution).to_contain_text("Distribuição efetiva usada no rateio")
+        expect(historical_distribution).to_contain_text("388.803,53")
+        expect(historical_distribution.locator("tbody tr").filter(has_text="Eduardo")).to_contain_text("233.282,12")
+        expect(historical_distribution.locator("tbody tr").filter(has_text="Eduardo")).to_contain_text("1.050,00")
+        expect(historical_distribution.locator("tbody tr").filter(has_text="Ana")).to_contain_text("155.521,41")
         page.screenshot(path="/tmp/inepad-history-expanded.png", full_page=True)
         print("PASS: filtering and keyboard-accessible historical bank breakdown")
+        print("PASS: historical partner distribution uses actual payout and quarterly discounts")
 
         page.locator("#newClosingButton").click()
         expect(page.locator("#closingEditor")).to_be_visible()
@@ -205,12 +226,20 @@ def run():
         print("PASS: zero account balances, automatic preview, snapshots and save flow")
 
         page.locator("#historyBody .history-toggle").first.click()
+        saved_distribution = page.locator("#historyBody .detail-row:visible .distribution-detail").first
+        expect(saved_distribution.locator("tbody tr").filter(has_text="Eduardo")).to_contain_text("300.000,00")
+        expect(saved_distribution.locator("tbody tr").filter(has_text="Ana")).to_contain_text("200.000,00")
         payment_form = page.locator("#historyBody .history-payment:visible").first
         payment_form.locator("input").fill("510000")
         payment_form.locator('button[type="submit"]').click()
         expect(page.locator("#latestDistribution")).to_contain_text("510.000,00")
         assert next(c for c in mock.state["closings"] if c["id"] == "new-closing")["rows"]["balances"]["Itaú Consulting"] == 1800000
+        page.locator("#historyBody .history-toggle").first.click()
+        updated_distribution = page.locator("#historyBody .detail-row:visible .distribution-detail").first
+        expect(updated_distribution.locator("tbody tr").filter(has_text="Eduardo")).to_contain_text("306.000,00")
+        expect(updated_distribution.locator("tbody tr").filter(has_text="Ana")).to_contain_text("204.000,00")
         print("PASS: payment update preserves the original closing balances")
+        print("PASS: new closing and changed payment recompute rateio from actual rather than estimated distribution")
 
         with page.expect_download() as download_info:
             page.locator("#historyExport").click()
@@ -248,6 +277,8 @@ def run():
         page.locator('[data-setting="partners"]').click()
         page.locator("#partnersList button").first.click()
         expect(page.locator("#partnerName")).to_have_value("Eduardo")
+        if page.locator("#partnerEmail").count():
+            page.locator("#partnerEmail").fill("eduardo@example.test")
         page.locator("#partnerMinimum").fill("7500")
         page.locator("#partnerForm button[type=submit]").click()
         expect(page.locator("#partnersList")).to_contain_text("7.500,00")
@@ -281,6 +312,46 @@ def run():
         readonly.close()
         print("PASS: common users can inspect reports and cannot open administration")
 
+        # The minimum is an extra funded by the company, never a reduction of
+        # the other partner's share. This pool deliberately differs from the
+        # estimated cash-generated distribution in the quarter's source data.
+        minimum_context = browser.new_context(viewport={"width": 1440, "height": 1000}, reduced_motion="reduce")
+        minimum_mock = MockAPI()
+        minimum_mock.state["partners"] = [
+            {"id": "partner-eduardo", "name": "Eduardo", "email": "eduardo@example.test", "share": 10, "minimum": 20000, "discount": 100},
+            {"id": "partner-ana", "name": "Ana", "email": "ana@example.test", "share": 90, "minimum": 0, "discount": 0},
+        ]
+        minimum_quarter = next(c for c in minimum_mock.state["closings"] if c["quarter"] == "2026 3º Trimestre")
+        minimum_quarter["rows"]["actual_distribution"] = 10000
+        minimum_quarter["rows"]["partner_rows"] = [{"id": "partner-eduardo", "name": "Stale estimated rateio", "share": 100, "bruto": 999999, "complement": 0, "desconto": 0, "total": 999999}]
+        install_mocks(minimum_context, minimum_mock)
+        minimum_page = minimum_context.new_page()
+        minimum_page.on("pageerror", lambda error: errors.append(str(error)))
+        minimum_page.on("console", lambda entry: errors.append(entry.text) if entry.type == "error" else None)
+        minimum_page.goto(base)
+        expect(minimum_page.locator("#appShell")).to_be_visible()
+        minimum_page.locator("#historyBody .history-toggle").nth(1).click()
+        minimum_distribution = minimum_page.locator("#historyBody .detail-row:visible .distribution-detail").first
+        expect(minimum_distribution).to_contain_text("Distribuição efetiva usada no rateio")
+        expect(minimum_distribution).to_contain_text("10.000,00")
+        expect(minimum_distribution).to_contain_text("Complemento extra do INEPAD")
+        expect(minimum_distribution).to_contain_text("59.000,00")
+        expect(minimum_distribution).to_contain_text("Total líquido aos sócios")
+        expect(minimum_distribution).to_contain_text("68.700,00")
+        eduardo_row = minimum_distribution.locator("tbody tr").filter(has_text="Eduardo")
+        ana_row = minimum_distribution.locator("tbody tr").filter(has_text="Ana")
+        expect(eduardo_row).to_contain_text("1.000,00")
+        expect(eduardo_row).to_contain_text("59.000,00")
+        expect(eduardo_row).to_contain_text("300,00")
+        expect(eduardo_row).to_contain_text("59.700,00")
+        expect(ana_row).to_contain_text("9.000,00")
+        expect(minimum_distribution).not_to_contain_text("Stale estimated rateio")
+        minimum_page.screenshot(path="/tmp/inepad-minimum-extra-distribution.png", full_page=True)
+        minimum_page.set_viewport_size({"width": 390, "height": 844})
+        no_overflow(minimum_page)
+        minimum_context.close()
+        print("PASS: minimum top-up is company extra, quarterly discount applies, and other partner's share stays intact")
+
         login = browser.new_context(viewport={"width": 1440, "height": 1000}, reduced_motion="reduce")
         install_mocks(login, MockAPI(), signed_in=False)
         login_page = login.new_page()
@@ -312,7 +383,8 @@ def run():
         print("PASS: login/recovery/logout and mobile auth layout")
 
         reset = browser.new_context(viewport={"width": 1440, "height": 1000}, reduced_motion="reduce")
-        install_mocks(reset, MockAPI(), signed_in=True)
+        reset_mock = MockAPI()
+        install_mocks(reset, reset_mock, signed_in=True)
         reset_page = reset.new_page()
         reset_page.on("pageerror", lambda error: errors.append(str(error)))
         reset_page.on("console", lambda message: errors.append(message.text) if message.type == "error" else None)
@@ -322,9 +394,37 @@ def run():
         reset_page.locator("#passwordConfirm").fill("new-offline-strong-password")
         reset_page.locator("#authSubmit").click()
         expect(reset_page.locator("#appShell")).to_be_visible()
-        assert reset_page.evaluate("window.__updatedPassword.password") == "new-offline-strong-password"
+        assert any(method == "POST" and path == "password-change" and body["password"] == "new-offline-strong-password" for method, path, body in reset_mock.writes)
         reset.close()
         print("PASS: recovery link opens actual new-password confirmation flow")
+
+        first_access = browser.new_context(viewport={"width": 1440, "height": 1000}, reduced_motion="reduce")
+        first_access_mock = MockAPI(role="partner", must_change_password=True)
+        install_mocks(first_access, first_access_mock, signed_in=True)
+        first_access_page = first_access.new_page()
+        first_access_page.on("pageerror", lambda error: errors.append(str(error)))
+        first_access_page.on("console", lambda entry: errors.append(entry.text) if entry.type == "error" else None)
+        first_access_page.goto(base)
+        expect(first_access_page.locator("#passwordConfirmField")).to_be_visible()
+        expect(first_access_page.locator("#authScreen")).to_be_visible()
+        expect(first_access_page.locator("#appShell")).not_to_be_visible()
+        assert "bootstrap" not in first_access_mock.reads
+        first_access_page.locator("#password").fill("inepad123")
+        first_access_page.locator("#passwordConfirm").fill("inepad123")
+        first_access_page.locator("#authSubmit").click()
+        expect(first_access_page.locator("#authMessage")).to_be_visible()
+        assert not any(path == "password-change" for _, path, _ in first_access_mock.writes)
+        assert "bootstrap" not in first_access_mock.reads
+        first_access_page.locator("#password").fill("new-private-first-access-password")
+        first_access_page.locator("#passwordConfirm").fill("new-private-first-access-password")
+        first_access_page.locator("#authSubmit").click()
+        expect(first_access_page.locator("#appShell")).to_be_visible()
+        expect(first_access_page.locator("#newClosingButton")).not_to_be_visible()
+        expect(first_access_page.locator('[data-page="settings"]')).not_to_be_visible()
+        assert any(method == "POST" and path == "password-change" and body["password"] == "new-private-first-access-password" for method, path, body in first_access_mock.writes)
+        assert "bootstrap" in first_access_mock.reads
+        first_access.close()
+        print("PASS: first access blocks reports until default password is replaced with a private password")
         assert not errors, errors
         print("PASS: no JavaScript page errors or browser console errors")
         browser.close()
