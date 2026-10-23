@@ -1,1 +1,7 @@
-{"name":"fechamento-inepad","version":"1.0.0","private":true,"scripts":{"start":"node server.js"},"engines":{"node":">=18"}}
+{
+  "name": "fechamento-inepad",
+  "version": "2.0.0",
+  "private": true,
+  "scripts": {"start": "node server.js", "test": "node --test test/*.test.js"},
+  "engines": {"node": ">=22"}
+}
