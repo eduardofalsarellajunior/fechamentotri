@@ -12,7 +12,7 @@ O e-mail é obrigatório no cadastro do sócio. Novas contas recebem a senha tem
 
 O banco usa as tabelas de `supabase/schema.sql`. Os dados históricos existentes são preservados. As contas excluídas continuam disponíveis nos saldos dos fechamentos anteriores.
 
-As configurações de URL do Supabase Auth devem usar o domínio principal `https://fechamentotri-edufal.vercel.app`, com esse domínio permitido como destino de recuperação de senha.
+As configurações de URL do Supabase Auth devem usar o domínio de produção `https://fechamentotri.vercel.app`, com esse domínio permitido como destino de recuperação de senha. O endereço `fechamentotri-edufal.vercel.app` é protegido pela autenticação da Vercel e não deve ser enviado aos sócios.
 
 ## Fluxo
 
